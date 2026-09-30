@@ -1,0 +1,226 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#fdf6e3">
+<title>Jump</title>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#222;touch-action:none;user-select:none;-webkit-user-select:none;font-family:system-ui,sans-serif}
+  #wrap{position:relative;height:100%;max-width:62vh;margin:0 auto}
+  canvas{display:block;width:100%;height:100%}
+  .ov{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;background:rgba(253,246,227,.94);color:#333;text-align:center;padding:16px}
+  .hide{display:none}
+  h1{margin:0;font-size:44px;letter-spacing:2px}
+  .pets{display:flex;gap:14px}
+  button{font:inherit;border:3px solid #333;border-radius:16px;background:#fff;padding:10px 18px;font-size:20px;font-weight:700;color:#333}
+  .pet{display:flex;flex-direction:column;align-items:center;gap:4px;padding:10px}
+  .pet canvas{width:110px;height:110px}
+  .pet small{font-weight:400;font-size:13px;color:#777}
+  p{margin:0;color:#555}
+  #big{font-size:56px;font-weight:800}
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="c"></canvas>
+  <div id="menu" class="ov">
+    <h1>JUMP</h1>
+    <p>Choisis ton sauteur</p>
+    <div class="pets">
+      <button class="pet" data-pet="cat"><canvas width="220" height="220"></canvas>Polux<small>chat noir &amp; blanc</small></button>
+      <button class="pet" data-pet="dog"><canvas width="220" height="220"></canvas>Rose<small>bouledogue français</small></button>
+    </div>
+    <p>Penche le téléphone ou touche à gauche / droite</p>
+  </div>
+  <div id="over" class="ov hide">
+    <h1 id="who"></h1>
+    <p>est tombé…</p>
+    <div id="big">0</div>
+    <p id="best"></p>
+    <button id="again">Rejouer</button>
+    <button id="change">Changer d'animal</button>
+  </div>
+</div>
+<script>
+const c = document.getElementById('c'), g = c.getContext('2d');
+const W = 400, GRAV = 0.35, JUMP = -11, SPRING = -18;
+let H, pet = 'cat', state = 'menu', P, plats, score, best = 0, tilt = null, touchDir = 0, keys = {};
+try { best = +localStorage.getItem('jump-best') || 0 } catch (e) {}
+
+function resize() {
+  const r = c.getBoundingClientRect(), d = devicePixelRatio || 1, s = r.width / W;
+  H = r.height / s;
+  c.width = r.width * d; c.height = r.height * d;
+  g.setTransform(s * d, 0, 0, s * d, 0, 0);
+}
+addEventListener('resize', resize); resize();
+
+// ---------- sprites ----------
+function drawPet(ctx, kind, x, y, face, squash) {
+  ctx.save(); ctx.translate(x, y); ctx.scale(face * (1 + squash * .25), 1 - squash * .25);
+  ctx.lineWidth = 2; ctx.strokeStyle = '#222';
+  const blob = (fill, bx, by, rx, ry) => { ctx.fillStyle = fill; ctx.beginPath(); ctx.ellipse(bx, by, rx, ry, 0, 0, 7); ctx.fill(); ctx.stroke() };
+  if (kind === 'cat') {
+    // tail
+    ctx.strokeStyle = '#111'; ctx.lineWidth = 6; ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(-12, 14); ctx.quadraticCurveTo(-30, 10, -24, -8); ctx.stroke();
+    ctx.lineWidth = 2; ctx.strokeStyle = '#222';
+    blob('#111', 0, 12, 15, 12);            // body
+    blob('#fff', 3, 15, 7, 8);              // white chest
+    blob('#fff', -8, 23, 5, 3); blob('#fff', 8, 23, 5, 3); // white paws
+    // ears
+    ctx.fillStyle = '#111';
+    for (const s of [-1, 1]) { ctx.beginPath(); ctx.moveTo(s * 5, -18); ctx.lineTo(s * 16, -30); ctx.lineTo(s * 16, -12); ctx.fill(); }
+    ctx.fillStyle = '#f4a3b4';
+    for (const s of [-1, 1]) { ctx.beginPath(); ctx.moveTo(s * 9, -18); ctx.lineTo(s * 14.5, -26); ctx.lineTo(s * 14.5, -16); ctx.fill(); }
+    blob('#111', 0, -10, 17, 14);           // head
+    blob('#fff', 3, -4, 9, 7);              // white muzzle
+    ctx.strokeStyle = '#fff'; ctx.beginPath(); ctx.moveTo(0, -14); ctx.lineTo(3, -22); ctx.moveTo(6, -14); ctx.lineTo(3, -22); ctx.stroke(); // blaze
+    for (const ex of [-5, 11]) { ctx.fillStyle = '#9be15d'; ctx.beginPath(); ctx.ellipse(ex, -12, 3.5, 4, 0, 0, 7); ctx.fill(); ctx.fillStyle = '#000'; ctx.fillRect(ex - .8, -15, 1.6, 6); }
+    ctx.fillStyle = '#f4a3b4'; ctx.beginPath(); ctx.moveTo(1, -6); ctx.lineTo(5, -6); ctx.lineTo(3, -3.5); ctx.fill();
+    ctx.strokeStyle = '#ddd'; ctx.lineWidth = 1; ctx.beginPath();
+    for (const s of [-1, 1]) { ctx.moveTo(3 + s * 7, -4); ctx.lineTo(3 + s * 20, -6); ctx.moveTo(3 + s * 7, -2); ctx.lineTo(3 + s * 20, 0); }
+    ctx.stroke();
+  } else {
+    const fur = '#a0673c', dark = '#5b3822';
+    ctx.strokeStyle = dark; ctx.lineWidth = 5; ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(-14, 16); ctx.lineTo(-19, 12); ctx.stroke(); // stubby tail
+    ctx.lineWidth = 2; ctx.strokeStyle = '#222';
+    blob(fur, 0, 12, 17, 13);               // stocky body
+    blob('#e9c9a6', 3, 15, 7, 8);           // light chest
+    blob(fur, -9, 23, 5, 3); blob(fur, 9, 23, 5, 3);
+    // bat ears
+    for (const s of [-1, 1]) {
+      ctx.fillStyle = fur; ctx.beginPath(); ctx.ellipse(s * 13, -26, 7, 12, s * .35, 0, 7); ctx.fill(); ctx.stroke();
+      ctx.fillStyle = '#e59aa0'; ctx.beginPath(); ctx.ellipse(s * 13, -25, 3.5, 8, s * .35, 0, 7); ctx.fill();
+    }
+    blob(fur, 0, -10, 20, 15);              // wide head
+    blob(dark, 3, -3, 11, 7);               // flat dark muzzle
+    ctx.strokeStyle = dark; ctx.beginPath(); ctx.moveTo(-4, -20); ctx.quadraticCurveTo(2, -23, 8, -20); ctx.stroke(); // wrinkle
+    for (const ex of [-7, 12]) { ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(ex, -12, 4, 0, 7); ctx.fill(); ctx.fillStyle = '#1a1a1a'; ctx.beginPath(); ctx.arc(ex + .8, -12, 2.6, 0, 7); ctx.fill(); }
+    ctx.fillStyle = '#111'; ctx.beginPath(); ctx.ellipse(3, -7, 4.5, 3, 0, 0, 7); ctx.fill();
+    ctx.fillStyle = '#ec6f86'; ctx.beginPath(); ctx.ellipse(5, 2, 3, 3.5, 0, 0, 7); ctx.fill(); // tongue
+  }
+  ctx.restore();
+}
+document.querySelectorAll('.pet canvas').forEach(cv => {
+  const ctx = cv.getContext('2d'); ctx.scale(3.4, 3.4);
+  drawPet(ctx, cv.parentNode.dataset.pet, 32, 36, 1, 0);
+});
+
+// ---------- game ----------
+function addPlat(y) {
+  const lvl = Math.min(score / 5000, 1);
+  const p = { x: Math.random() * (W - 70), y, w: 70, type: Math.random() < .15 + lvl * .35 ? 'move' : 'norm', vx: (Math.random() < .5 ? -1 : 1) * (1 + lvl * 1.5), spring: Math.random() < .07 };
+  plats.push(p);
+  // decoy breakable platform, never the only way up
+  if (Math.random() < .1 + lvl * .25) plats.push({ x: Math.random() * (W - 70), y: y - 30 - Math.random() * 20, w: 70, type: 'break' });
+}
+function gap() { return 55 + Math.min(score / 5000, 1) * 75 + Math.random() * 20 } // max 150 < jump height ~172
+
+function start() {
+  score = 0; plats = [];
+  P = { x: W / 2, y: H - 120, vx: 0, vy: JUMP, face: 1, squash: 0 };
+  plats.push({ x: W / 2 - 35, y: H - 60, w: 70, type: 'norm' });
+  let y = H - 60;
+  while (y > -60) { y -= gap(); addPlat(y); }
+  state = 'play';
+  menu.classList.add('hide'); over.classList.add('hide');
+}
+
+function gameOver() {
+  state = 'over';
+  const s = Math.floor(score / 10);
+  if (s > best) { best = s; try { localStorage.setItem('jump-best', best) } catch (e) {} }
+  who.textContent = pet === 'cat' ? 'Polux' : 'Rose';
+  big.textContent = s; document.getElementById('best').textContent = 'Record : ' + best;
+  over.classList.remove('hide');
+}
+
+function update(dt) {
+  // horizontal control
+  let dir = touchDir || (keys.ArrowLeft ? -1 : keys.ArrowRight ? 1 : 0);
+  if (tilt !== null && !dir) P.vx = Math.max(-8, Math.min(8, tilt / 4));
+  else P.vx += (dir * 0.8 - P.vx * 0.12) * dt;
+  if (P.vx > .3) P.face = 1; else if (P.vx < -.3) P.face = -1;
+  P.x += P.vx * dt;
+  if (P.x < -20) P.x += W + 40; if (P.x > W + 20) P.x -= W + 40;
+
+  const prevBottom = P.y + 24;
+  P.vy += GRAV * dt; P.y += P.vy * dt;
+  P.squash = Math.max(0, P.squash - .08 * dt);
+
+  for (const p of plats) {
+    if (p.type === 'move') { p.x += p.vx * dt; if (p.x < 0 || p.x > W - p.w) p.vx *= -1; }
+    if (p.broken) { p.y += 6 * dt; continue; }
+    if (P.vy > 0 && prevBottom <= p.y && P.y + 24 >= p.y && P.x + 12 > p.x && P.x - 12 < p.x + p.w) {
+      if (p.type === 'break') { p.broken = true; continue; }
+      const springHit = p.spring && Math.abs(P.x - (p.x + p.w / 2)) < 16;
+      P.vy = springHit ? SPRING : JUMP; P.y = p.y - 24; P.squash = 1;
+      if (navigator.vibrate && springHit) navigator.vibrate(20);
+    }
+  }
+
+  // scroll camera
+  const line = H * 0.4;
+  if (P.y < line) {
+    const d = line - P.y; P.y = line; score += d;
+    for (const p of plats) p.y += d;
+  }
+  plats = plats.filter(p => p.y < H + 40);
+  let top = Math.min(...plats.filter(p => p.type !== 'break').map(p => p.y));
+  while (top > -60) { top -= gap(); addPlat(top); }
+
+  if (P.y > H + 40) gameOver();
+}
+
+function draw() {
+  g.fillStyle = '#fdf6e3'; g.fillRect(0, 0, W, H);
+  g.strokeStyle = '#e9dfc4'; g.lineWidth = 1; g.beginPath();
+  const off = (score || 0) % 20;
+  for (let y = off; y < H; y += 20) { g.moveTo(0, y); g.lineTo(W, y); }
+  for (let x = 0; x < W; x += 20) { g.moveTo(x, 0); g.lineTo(x, H); }
+  g.stroke();
+  if (!plats) return;
+  for (const p of plats) {
+    g.fillStyle = p.type === 'break' ? '#b07b45' : p.type === 'move' ? '#5aa9e6' : '#6cc04a';
+    g.strokeStyle = '#333'; g.lineWidth = 2;
+    g.beginPath(); g.roundRect(p.x, p.y, p.w, 14, 7); g.fill(); g.stroke();
+    if (p.type === 'break') { g.beginPath(); g.moveTo(p.x + 30, p.y); g.lineTo(p.x + 36, p.y + 7); g.lineTo(p.x + 32, p.y + 14); g.stroke(); }
+    if (p.spring) { const sx = p.x + p.w / 2; g.fillStyle = '#ccc'; g.fillRect(sx - 7, p.y - 10, 14, 10); g.strokeRect(sx - 7, p.y - 10, 14, 10); }
+  }
+  drawPet(g, pet, P.x, P.y, P.face, P.squash);
+  g.fillStyle = '#333'; g.font = 'bold 26px system-ui'; g.fillText(Math.floor(score / 10), 14, 38);
+}
+
+let last = 0;
+function loop(t) {
+  const dt = Math.min((t - last) / 16.67, 3); last = t;
+  if (state === 'play') update(dt);
+  draw();
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+
+// ---------- input ----------
+async function enableTilt() {
+  try {
+    if (typeof DeviceOrientationEvent !== 'undefined' && DeviceOrientationEvent.requestPermission)
+      if (await DeviceOrientationEvent.requestPermission() !== 'granted') return;
+    addEventListener('deviceorientation', e => { if (e.gamma !== null) tilt = e.gamma; });
+  } catch (e) {}
+}
+document.querySelectorAll('.pet').forEach(b => b.onclick = () => { pet = b.dataset.pet; enableTilt(); start(); });
+again.onclick = start;
+change.onclick = () => { state = 'menu'; over.classList.add('hide'); menu.classList.remove('hide'); };
+c.addEventListener('pointerdown', e => { const r = c.getBoundingClientRect(); touchDir = e.clientX - r.left < r.width / 2 ? -1 : 1; });
+addEventListener('pointerup', () => touchDir = 0);
+addEventListener('pointercancel', () => touchDir = 0);
+addEventListener('keydown', e => keys[e.key] = true);
+addEventListener('keyup', e => keys[e.key] = false);
+</script>
+</body>
+</html>
