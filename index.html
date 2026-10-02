@@ -11,8 +11,8 @@
   html,body{margin:0;height:100%;overflow:hidden;background:#222;touch-action:none;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none;font-family:system-ui,sans-serif}
   #wrap{position:relative;height:100%;max-width:62vh;margin:0 auto}
   canvas{display:block;width:100%;height:100%}
-  .ov{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;background:rgba(253,246,227,.94);color:#333;text-align:center;padding:16px}
-  .hide{display:none}
+  .ov{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:rgba(253,246,227,.94);color:#333;text-align:center;padding:16px}
+  .hide{display:none!important}
   h1{margin:0;font-size:44px;letter-spacing:2px}
   .pets{display:flex;gap:14px}
   button{font:inherit;border:3px solid #333;border-radius:16px;background:#fff;padding:10px 18px;font-size:20px;font-weight:700;color:#333}
@@ -21,6 +21,14 @@
   .pet small{font-weight:400;font-size:13px;color:#777}
   p{margin:0;color:#555}
   #big{font-size:56px;font-weight:800}
+  #reg{display:flex;gap:8px}
+  input{font:inherit;font-size:18px;border:3px solid #333;border-radius:14px;padding:8px 12px;width:150px;-webkit-user-select:text;user-select:text}
+  #reg button{font-size:16px;padding:8px 12px}
+  #regMsg{color:#c0392b;min-height:1em}
+  a{color:#333}
+  ol{margin:0;padding:0 0 0 30px;text-align:left;font-size:18px;min-width:230px;max-height:55vh;overflow:auto}
+  li{padding:3px 0}
+  li.me{font-weight:800;color:#c0392b}
 </style>
 </head>
 <body>
@@ -28,27 +36,41 @@
   <canvas id="c"></canvas>
   <div id="menu" class="ov">
     <h1>JUMP</h1>
+    <div id="reg"><input id="nameIn" maxlength="12" placeholder="Ton pseudo" autocomplete="off"><button id="regBtn">S'enregistrer</button></div>
+    <p id="hello" class="hide">Joueur : <b id="meName"></b> · <a href="#" id="logout">changer</a></p>
+    <p id="regMsg"></p>
     <p>Choisis ton sauteur</p>
     <div class="pets">
       <button class="pet" data-pet="cat"><canvas width="220" height="220"></canvas>Polux<small>chat noir &amp; blanc</small></button>
       <button class="pet" data-pet="dog"><canvas width="220" height="220"></canvas>Rose<small>bouledogue français</small></button>
     </div>
+    <button id="boardBtn">🏆 Scores</button>
     <p>Penche le téléphone ou touche à gauche / droite</p>
+  </div>
+  <div id="board" class="ov hide">
+    <h1>🏆 Scores</h1>
+    <ol id="boardList"></ol>
+    <button id="boardClose">Retour</button>
   </div>
   <div id="over" class="ov hide">
     <h1 id="who"></h1>
-    <p>est tombé…</p>
+    <p id="how">est tombé…</p>
     <div id="big">0</div>
     <p id="best"></p>
+    <ol id="overList"></ol>
+    <p id="overMsg"></p>
     <button id="again">Rejouer</button>
-    <button id="change">Changer d'animal</button>
+    <button id="change">Menu</button>
   </div>
 </div>
 <script>
 const c = document.getElementById('c'), g = c.getContext('2d');
 const W = 400, GRAV = 0.35, JUMP = -11, SPRING = -18;
-let H, pet = 'cat', state = 'menu', P, plats, score, best = 0, tilt = null, touchDir = 0, keys = {};
-try { best = +localStorage.getItem('jump-best') || 0 } catch (e) {}
+const LEVEL_MSG = ['', 'Ça accélère !', 'Plateformes fantômes !', 'Attention aux monstres !'];
+let H, pet = 'cat', state = 'menu', P, plats, mons, score, lastLevel, banner, best = 0, tilt = null, touchDir = 0, keys = {};
+let me = null;
+try { best = +localStorage.getItem('jump-best') || 0; me = JSON.parse(localStorage.getItem('jump-me')) } catch (e) {}
+const buzz = ms => navigator.vibrate && navigator.vibrate(ms);
 
 function resize() {
   const r = c.getBoundingClientRect(), d = devicePixelRatio || 1, s = r.width / W;
@@ -106,24 +128,39 @@ function drawPet(ctx, kind, x, y, face, squash) {
   }
   ctx.restore();
 }
+function drawMonster(m) {
+  g.save(); g.translate(m.x, m.y); g.lineWidth = 2; g.strokeStyle = '#222';
+  g.fillStyle = '#8e44ad'; g.beginPath(); g.ellipse(0, 0, 18, 15, 0, 0, 7); g.fill(); g.stroke();
+  for (const s of [-1, 1]) { g.beginPath(); g.moveTo(s * 8, -12); g.lineTo(s * 14, -22); g.lineTo(s * 15, -9); g.fill(); g.stroke(); } // horns
+  for (const s of [-1, 1]) { g.fillStyle = '#fff'; g.beginPath(); g.arc(s * 6, -3, 5, 0, 7); g.fill(); g.fillStyle = '#c0392b'; g.beginPath(); g.arc(s * 6, -2, 2.5, 0, 7); g.fill(); }
+  g.fillStyle = '#fff'; g.beginPath(); g.moveTo(-8, 6); for (let i = 0; i < 4; i++) { g.lineTo(-6 + i * 4, 11); g.lineTo(-4 + i * 4, 6); } g.fill();
+  g.restore();
+}
 document.querySelectorAll('.pet canvas').forEach(cv => {
   const ctx = cv.getContext('2d'); ctx.scale(3.4, 3.4);
   drawPet(ctx, cv.parentNode.dataset.pet, 32, 36, 1, 0);
 });
 
 // ---------- game ----------
+// one level per 1000 displayed points (score is in pixels, 10 px = 1 point)
+const level = () => Math.floor(score / 10000);
+// max 150 < jump height ~165 at any frame rate: always climbable
+function gap() { return Math.min(150, 55 + level() * 14 + Math.random() * 20) }
+
 function addPlat(y) {
-  const lvl = Math.min(score / 5000, 1);
-  const p = { x: Math.random() * (W - 70), y, w: 70, type: Math.random() < .15 + lvl * .35 ? 'move' : 'norm', vx: (Math.random() < .5 ? -1 : 1) * (1 + lvl * 1.5), spring: Math.random() < .07 };
-  plats.push(p);
+  const L = level(), w = Math.max(44, 70 - L * 4);
+  const type = L >= 2 && Math.random() < Math.min(.15 + (L - 2) * .05, .35) ? 'vanish'
+    : Math.random() < Math.min(.12 + L * .1, .7) ? 'move' : 'norm';
+  plats.push({ x: Math.random() * (W - w), y, w, type, vx: (Math.random() < .5 ? -1 : 1) * (1 + L * .4), spring: type !== 'vanish' && Math.random() < .07 });
   // decoy breakable platform, never the only way up
-  if (Math.random() < .1 + lvl * .25) plats.push({ x: Math.random() * (W - 70), y: y - 30 - Math.random() * 20, w: 70, type: 'break' });
+  if (Math.random() < Math.min(.1 + L * .06, .4)) plats.push({ x: Math.random() * (W - w), y: y - 30 - Math.random() * 20, w, type: 'break' });
+  if (L >= 3 && Math.random() < Math.min(.04 + (L - 3) * .02, .2))
+    mons.push({ x: 30 + Math.random() * (W - 60), y: y - 70, vx: (Math.random() < .5 ? -1 : 1) * (.6 + L * .1) });
 }
-function gap() { return 55 + Math.min(score / 5000, 1) * 75 + Math.random() * 20 } // max 150 < jump height ~172
 
 function start() {
-  score = 0; plats = [];
-  P = { x: W / 2, y: H - 120, vx: 0, vy: JUMP, face: 1, squash: 0 };
+  score = 0; lastLevel = 0; banner = null; plats = []; mons = [];
+  P = { x: W / 2, y: H - 120, vx: 0, vy: JUMP, face: 1, squash: 0, dead: false };
   plats.push({ x: W / 2 - 35, y: H - 60, w: 70, type: 'norm' });
   let y = H - 60;
   while (y > -60) { y -= gap(); addPlat(y); }
@@ -136,7 +173,13 @@ function gameOver() {
   const s = Math.floor(score / 10);
   if (s > best) { best = s; try { localStorage.setItem('jump-best', best) } catch (e) {} }
   who.textContent = pet === 'cat' ? 'Polux' : 'Rose';
-  big.textContent = s; document.getElementById('best').textContent = 'Record : ' + best;
+  how.textContent = P.dead ? 'a été attrapé par un monstre !' : pet === 'cat' ? 'est tombé…' : 'est tombée…';
+  big.textContent = s; document.getElementById('best').textContent = 'Niveau ' + (level() + 1) + ' · Record : ' + best;
+  overList.textContent = '';
+  overMsg.textContent = me ? 'Envoi du score…' : 'Enregistre un pseudo au menu pour entrer au tableau des scores';
+  (me ? api('scores', { name: me.name, token: me.token, score: s, pet }) : api('scores'))
+    .then(list => { renderBoard(overList, list.slice(0, 5)); if (me) overMsg.textContent = '' },
+      e => overMsg.textContent = e === 403 ? 'Pseudo inconnu : réenregistre-toi au menu' : 'Tableau des scores indisponible');
   over.classList.remove('hide');
 }
 
@@ -156,23 +199,37 @@ function update(dt) {
   for (const p of plats) {
     if (p.type === 'move') { p.x += p.vx * dt; if (p.x < 0 || p.x > W - p.w) p.vx *= -1; }
     if (p.broken) { p.y += 6 * dt; continue; }
-    if (P.vy > 0 && prevBottom <= p.y && P.y + 24 >= p.y && P.x + 12 > p.x && P.x - 12 < p.x + p.w) {
+    if (!P.dead && P.vy > 0 && prevBottom <= p.y && P.y + 24 >= p.y && P.x + 12 > p.x && P.x - 12 < p.x + p.w) {
       if (p.type === 'break') { p.broken = true; continue; }
+      if (p.type === 'vanish') p.gone = true;
       const springHit = p.spring && Math.abs(P.x - (p.x + p.w / 2)) < 16;
       P.vy = springHit ? SPRING : JUMP; P.y = p.y - 24; P.squash = 1;
-      if (navigator.vibrate && springHit) navigator.vibrate(20);
+      if (springHit) buzz(20);
+    }
+  }
+  for (const m of mons) {
+    m.x += m.vx * dt; if (m.x < 20 || m.x > W - 20) m.vx *= -1;
+    if (!P.dead && Math.hypot(P.x - m.x, P.y - m.y) < 32) {
+      if (P.vy > 0 && P.y < m.y - 4) { m.hit = true; P.vy = JUMP; P.squash = 1; buzz(30) } // stomp
+      else { P.dead = true; P.vy = Math.max(P.vy, 0); buzz(200) }
     }
   }
 
   // scroll camera
   const line = H * 0.4;
-  if (P.y < line) {
+  if (P.y < line && !P.dead) {
     const d = line - P.y; P.y = line; score += d;
     for (const p of plats) p.y += d;
+    for (const m of mons) m.y += d;
   }
-  plats = plats.filter(p => p.y < H + 40);
-  let top = Math.min(...plats.filter(p => p.type !== 'break').map(p => p.y));
+  plats = plats.filter(p => !p.gone && p.y < H + 40);
+  mons = mons.filter(m => !m.hit && m.y < H + 40);
+  let top = Math.min(H, ...plats.filter(p => p.type !== 'break').map(p => p.y));
   while (top > -60) { top -= gap(); addPlat(top); }
+
+  const L = level();
+  if (L > lastLevel) { lastLevel = L; banner = { t: 150, a: 'Niveau ' + (L + 1), b: LEVEL_MSG[L] || 'Encore plus dur !' }; buzz(60); }
+  if (banner) banner.t -= dt;
 
   if (P.y > H + 40) gameOver();
 }
@@ -186,14 +243,25 @@ function draw() {
   g.stroke();
   if (!plats) return;
   for (const p of plats) {
-    g.fillStyle = p.type === 'break' ? '#b07b45' : p.type === 'move' ? '#5aa9e6' : '#6cc04a';
+    g.fillStyle = { break: '#b07b45', move: '#5aa9e6', vanish: '#fff' }[p.type] || '#6cc04a';
     g.strokeStyle = '#333'; g.lineWidth = 2;
+    if (p.type === 'vanish') g.setLineDash([5, 4]);
     g.beginPath(); g.roundRect(p.x, p.y, p.w, 14, 7); g.fill(); g.stroke();
+    g.setLineDash([]);
     if (p.type === 'break') { g.beginPath(); g.moveTo(p.x + 30, p.y); g.lineTo(p.x + 36, p.y + 7); g.lineTo(p.x + 32, p.y + 14); g.stroke(); }
     if (p.spring) { const sx = p.x + p.w / 2; g.fillStyle = '#ccc'; g.fillRect(sx - 7, p.y - 10, 14, 10); g.strokeRect(sx - 7, p.y - 10, 14, 10); }
   }
-  drawPet(g, pet, P.x, P.y, P.face, P.squash);
-  g.fillStyle = '#333'; g.font = 'bold 26px system-ui'; g.fillText(Math.floor(score / 10), 14, 38);
+  for (const m of mons) drawMonster(m);
+  g.save(); g.translate(P.x, P.y); if (P.dead) g.rotate(Math.PI);
+  drawPet(g, pet, 0, 0, P.face, P.squash); g.restore();
+  g.fillStyle = '#333'; g.font = 'bold 26px system-ui'; g.textAlign = 'left'; g.fillText(Math.floor(score / 10), 14, 38);
+  g.font = 'bold 18px system-ui'; g.textAlign = 'right'; g.fillText('Niv. ' + (level() + 1), W - 14, 36);
+  if (banner && banner.t > 0) {
+    g.globalAlpha = Math.min(1, banner.t / 30); g.textAlign = 'center';
+    g.fillStyle = '#c0392b'; g.font = 'bold 40px system-ui'; g.fillText(banner.a, W / 2, H * .28);
+    g.fillStyle = '#333'; g.font = 'bold 22px system-ui'; g.fillText(banner.b, W / 2, H * .28 + 34);
+    g.globalAlpha = 1;
+  }
 }
 
 let last = 0;
@@ -204,6 +272,48 @@ function loop(t) {
   requestAnimationFrame(loop);
 }
 requestAnimationFrame(loop);
+
+// ---------- leaderboard ----------
+// relative URL: works under /jump/ on the Mac mini; fails cleanly on static hosting
+function api(path, body) {
+  return fetch('api/' + path, body && { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+    .then(r => r.ok ? r.json() : Promise.reject(r.status));
+}
+function renderBoard(el, list) {
+  el.replaceChildren(...list.map(p => {
+    const li = document.createElement('li');
+    li.textContent = (p.pet === 'dog' ? '🐶 ' : '🐱 ') + p.name + ' — ' + p.score;
+    if (me && p.name.toLowerCase() === me.name.toLowerCase()) li.className = 'me';
+    return li;
+  }));
+  if (!list.length) el.textContent = 'Aucun score pour l\'instant';
+}
+function showMe() {
+  reg.classList.toggle('hide', !!me); hello.classList.toggle('hide', !me);
+  if (me) meName.textContent = me.name;
+}
+regBtn.onclick = async () => {
+  const name = nameIn.value.trim();
+  if (!name) { regMsg.textContent = 'Écris un pseudo'; return; }
+  regMsg.textContent = '…';
+  try {
+    me = await api('register', { name });
+    try { localStorage.setItem('jump-me', JSON.stringify(me)) } catch (e) {}
+    regMsg.textContent = ''; showMe();
+  } catch (e) { regMsg.textContent = e === 409 ? 'Ce pseudo est déjà pris' : 'Inscription indisponible'; }
+};
+nameIn.onkeydown = e => { if (e.key === 'Enter') regBtn.click(); };
+logout.onclick = e => {
+  e.preventDefault(); me = null;
+  try { localStorage.removeItem('jump-me') } catch (e) {}
+  showMe();
+};
+boardBtn.onclick = () => {
+  board.classList.remove('hide'); boardList.textContent = 'Chargement…';
+  api('scores').then(l => renderBoard(boardList, l), () => boardList.textContent = 'Tableau des scores indisponible');
+};
+boardClose.onclick = () => board.classList.add('hide');
+showMe();
 
 // ---------- input ----------
 async function enableTilt() {
