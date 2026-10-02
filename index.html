@@ -29,11 +29,13 @@
   ol{margin:0;padding:0 0 0 30px;text-align:left;font-size:18px;min-width:230px;max-height:55vh;overflow:auto}
   li{padding:3px 0}
   li.me{font-weight:800;color:#c0392b}
+  #mute{position:absolute;top:8px;left:50%;transform:translateX(-50%);z-index:5;font-size:18px;padding:4px 10px;border-width:2px;border-radius:12px;background:rgba(255,255,255,.8)}
 </style>
 </head>
 <body>
 <div id="wrap">
   <canvas id="c"></canvas>
+  <button id="mute" aria-label="Couper le son">🔊</button>
   <div id="menu" class="ov">
     <h1>JUMP</h1>
     <div id="reg"><input id="nameIn" maxlength="12" placeholder="Ton pseudo" autocomplete="off"><button id="regBtn">S'enregistrer</button></div>
@@ -141,6 +143,64 @@ document.querySelectorAll('.pet canvas').forEach(cv => {
   drawPet(ctx, cv.parentNode.dataset.pet, 32, 36, 1, 0);
 });
 
+// ---------- sound (Web Audio, all synthesized, no files) ----------
+let ac, master, musicGain, muted = false, musicTimer, step = 0, nextT = 0;
+try { muted = localStorage.getItem('jump-mute') === '1' } catch (e) {}
+function audio() { // must first run inside a tap (iOS/Android autoplay rules)
+  if (!ac) {
+    const AC = globalThis.AudioContext || globalThis.webkitAudioContext;
+    if (!AC) return null;
+    ac = new AC(); master = ac.createGain(); master.connect(ac.destination);
+    musicGain = ac.createGain(); musicGain.gain.value = .35; musicGain.connect(master);
+  }
+  master.gain.value = muted ? 0 : .5;
+  if (ac.state === 'suspended') ac.resume();
+  return ac;
+}
+function tone(f1, f2, dur, type = 'square', vol = .3, when = 0, out = master) {
+  if (!ac) return;
+  const t = ac.currentTime + when, o = ac.createOscillator(), v = ac.createGain();
+  o.type = type; o.frequency.setValueAtTime(f1, t); o.frequency.exponentialRampToValueAtTime(f2, t + dur);
+  v.gain.setValueAtTime(vol, t); v.gain.exponentialRampToValueAtTime(.001, t + dur);
+  o.connect(v); v.connect(out); o.start(t); o.stop(t + dur + .02);
+}
+const arp = (notes, gap, type, vol) => notes.forEach((f, i) => tone(f, f, gap * 1.4, type, vol, i * gap));
+const sfx = {
+  jump: () => tone(320, 640, .12, 'square', .12),
+  spring: () => tone(250, 1400, .35, 'square', .14),
+  crack: () => tone(180, 60, .2, 'sawtooth', .2),
+  treat: () => arp([880, 1320], .08, 'triangle', .3),
+  shield: () => arp([523, 659, 784, 1047], .06, 'triangle', .25),
+  rocket: () => tone(80, 400, 2.4, 'sawtooth', .12),
+  stomp: () => tone(700, 120, .25, 'square', .18),
+  hurt: () => tone(600, 80, .9, 'sawtooth', .22),
+  fall: () => tone(500, 60, 1, 'triangle', .3),
+  level: () => arp([523, 659, 784, 1047, 784, 1047], .1, 'square', .13),
+};
+const midi = m => 440 * 2 ** ((m - 69) / 12);
+const MEL = [72, 0, 76, 79, 76, 0, 72, 74, 76, 0, 74, 72, 67, 0, 0, 0, 69, 0, 72, 76, 74, 0, 72, 69, 71, 0, 72, 74, 72, 0, 0, 0];
+const BASS = [48, 48, 53, 55, 45, 53, 55, 48];
+function schedule() {
+  const len = .15 / Math.min(1 + level() * .05, 1.5); // eighth note, faster each level
+  if (nextT < ac.currentTime) nextT = ac.currentTime + .05; // tab was throttled: don't burst
+  while (nextT < ac.currentTime + .2) {
+    const w = nextT - ac.currentTime, m = MEL[step % 32];
+    if (m) tone(midi(m), midi(m), len * .9, 'square', .12, w, musicGain);
+    if (step % 2 === 0) { const b = midi(BASS[(step >> 2) % 8]); tone(b, b, len * 1.6, 'triangle', .3, w, musicGain); }
+    nextT += len; step++;
+  }
+}
+function musicStart() { if (!audio() || musicTimer) return; step = 0; nextT = ac.currentTime + .1; musicTimer = setInterval(schedule, 50); }
+function musicStop() { clearInterval(musicTimer); musicTimer = null; }
+function showMute() { mute.textContent = muted ? '🔇' : '🔊'; }
+mute.onclick = () => {
+  muted = !muted; showMute();
+  try { localStorage.setItem('jump-mute', muted ? '1' : '0') } catch (e) {}
+  if (audio()) master.gain.value = muted ? 0 : .5;
+};
+showMute();
+document.addEventListener('visibilitychange', () => { if (ac) document.hidden ? ac.suspend() : ac.resume(); });
+
 // ---------- game ----------
 // one level per 1000 displayed points (score is in pixels, 10 px = 1 point)
 const level = () => Math.floor(score / 10000);
@@ -173,10 +233,12 @@ function start() {
   while (y > -60) { y -= gap(); addPlat(y); }
   state = 'play';
   menu.classList.add('hide'); over.classList.add('hide');
+  musicStart();
 }
 
 function gameOver() {
   state = 'over';
+  musicStop(); if (!P.dead) sfx.fall();
   const s = pts();
   if (s > best) { best = s; try { localStorage.setItem('jump-best', best) } catch (e) {} }
   who.textContent = pet === 'cat' ? 'Polux' : 'Rose';
@@ -210,27 +272,27 @@ function update(dt) {
     if (p.type === 'move') { p.x += p.vx * dt; if (p.x < 0 || p.x > W - p.w) p.vx *= -1; }
     if (p.broken) { p.y += 6 * dt; continue; }
     if (!P.dead && P.vy > 0 && prevBottom <= p.y && P.y + 24 >= p.y && P.x + 12 > p.x && P.x - 12 < p.x + p.w) {
-      if (p.type === 'break') { p.broken = true; continue; }
+      if (p.type === 'break') { p.broken = true; sfx.crack(); continue; }
       if (p.type === 'vanish') p.gone = true;
       const springHit = p.spring && Math.abs(P.x - (p.x + p.w / 2)) < 16;
       P.vy = springHit ? SPRING : JUMP; P.y = p.y - 24; P.squash = 1;
-      if (springHit) buzz(20);
+      if (springHit) { buzz(20); sfx.spring(); } else sfx.jump();
     }
     if (p.item && !P.dead && Math.hypot(P.x - (p.x + p.w / 2), P.y - (p.y - 16)) < 30) {
       const pop = { x: p.x + p.w / 2, y: p.y - 30, t: 50 };
-      if (p.item === 'rocket') { P.rocket = 150; pop.text = 'Fusée !'; }
-      else if (p.item === 'shield') { P.shield = 600; pop.text = 'Bouclier !'; }
-      else { bonus += 100; pop.text = '+100'; }
+      if (p.item === 'rocket') { P.rocket = 150; pop.text = 'Fusée !'; sfx.rocket(); }
+      else if (p.item === 'shield') { P.shield = 600; pop.text = 'Bouclier !'; sfx.shield(); }
+      else { bonus += 100; pop.text = '+100'; sfx.treat(); }
       pops.push(pop); p.item = null; buzz(25);
     }
   }
   for (const m of mons) {
     m.x += m.vx * dt; if (m.x < 20 || m.x > W - 20) m.vx *= -1;
     if (!P.dead && Math.hypot(P.x - m.x, P.y - m.y) < 32) {
-      if (P.vy > 0 && P.y < m.y - 4) { m.hit = true; P.vy = JUMP; P.squash = 1; buzz(30) } // stomp
-      else if (P.rocket > 0) { m.hit = true; buzz(30) }
-      else if (P.shield > 0) { m.hit = true; P.shield = 0; buzz(80) }
-      else { P.dead = true; P.vy = Math.max(P.vy, 0); buzz(200) }
+      if (P.vy > 0 && P.y < m.y - 4) { m.hit = true; P.vy = JUMP; P.squash = 1; buzz(30); sfx.stomp() } // stomp
+      else if (P.rocket > 0) { m.hit = true; buzz(30); sfx.stomp() }
+      else if (P.shield > 0) { m.hit = true; P.shield = 0; buzz(80); sfx.stomp() }
+      else { P.dead = true; P.vy = Math.max(P.vy, 0); buzz(200); sfx.hurt() }
     }
   }
 
@@ -250,7 +312,7 @@ function update(dt) {
   while (top > -60) { top -= gap(); addPlat(top); }
 
   const L = level();
-  if (L > lastLevel) { lastLevel = L; banner = { t: 150, a: 'Niveau ' + (L + 1), b: LEVEL_MSG[L] || 'Encore plus dur !' }; buzz(60); }
+  if (L > lastLevel) { lastLevel = L; banner = { t: 150, a: 'Niveau ' + (L + 1), b: LEVEL_MSG[L] || 'Encore plus dur !' }; buzz(60); sfx.level(); }
   if (banner) banner.t -= dt;
 
   if (P.y > H + 40) gameOver();
