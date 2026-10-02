@@ -67,7 +67,7 @@
 const c = document.getElementById('c'), g = c.getContext('2d');
 const W = 400, GRAV = 0.35, JUMP = -11, SPRING = -18;
 const LEVEL_MSG = ['', 'Ça accélère !', 'Plateformes fantômes !', 'Attention aux monstres !'];
-let H, pet = 'cat', state = 'menu', P, plats, mons, score, lastLevel, banner, best = 0, tilt = null, touchDir = 0, keys = {};
+let H, pet = 'cat', state = 'menu', P, plats, mons, pops, bonus, score, lastLevel, banner, best = 0, tilt = null, touchDir = 0, keys = {};
 let me = null;
 try { best = +localStorage.getItem('jump-best') || 0; me = JSON.parse(localStorage.getItem('jump-me')) } catch (e) {}
 const buzz = ms => navigator.vibrate && navigator.vibrate(ms);
@@ -144,6 +144,8 @@ document.querySelectorAll('.pet canvas').forEach(cv => {
 // ---------- game ----------
 // one level per 1000 displayed points (score is in pixels, 10 px = 1 point)
 const level = () => Math.floor(score / 10000);
+const pts = () => Math.floor(score / 10) + bonus;
+const ITEM = { rocket: '🚀', shield: '🛡️' };
 // max 150 < jump height ~165 at any frame rate: always climbable
 function gap() { return Math.min(150, 55 + level() * 14 + Math.random() * 20) }
 
@@ -151,7 +153,12 @@ function addPlat(y) {
   const L = level(), w = Math.max(44, 70 - L * 4);
   const type = L >= 2 && Math.random() < Math.min(.15 + (L - 2) * .05, .35) ? 'vanish'
     : Math.random() < Math.min(.12 + L * .1, .7) ? 'move' : 'norm';
-  plats.push({ x: Math.random() * (W - w), y, w, type, vx: (Math.random() < .5 ? -1 : 1) * (1 + L * .4), spring: type !== 'vanish' && Math.random() < .07 });
+  const p = { x: Math.random() * (W - w), y, w, type, vx: (Math.random() < .5 ? -1 : 1) * (1 + L * .4), spring: type !== 'vanish' && Math.random() < .07 };
+  if (!p.spring && type !== 'vanish') {
+    const r = Math.random(), shield = L >= 3 ? .035 : .01;
+    p.item = r < .02 ? 'rocket' : r < .02 + shield ? 'shield' : r < .1 + shield ? 'treat' : null;
+  }
+  plats.push(p);
   // decoy breakable platform, never the only way up
   if (Math.random() < Math.min(.1 + L * .06, .4)) plats.push({ x: Math.random() * (W - w), y: y - 30 - Math.random() * 20, w, type: 'break' });
   if (L >= 3 && Math.random() < Math.min(.04 + (L - 3) * .02, .2))
@@ -159,8 +166,8 @@ function addPlat(y) {
 }
 
 function start() {
-  score = 0; lastLevel = 0; banner = null; plats = []; mons = [];
-  P = { x: W / 2, y: H - 120, vx: 0, vy: JUMP, face: 1, squash: 0, dead: false };
+  score = 0; bonus = 0; lastLevel = 0; banner = null; plats = []; mons = []; pops = [];
+  P = { x: W / 2, y: H - 120, vx: 0, vy: JUMP, face: 1, squash: 0, dead: false, rocket: 0, shield: 0 };
   plats.push({ x: W / 2 - 35, y: H - 60, w: 70, type: 'norm' });
   let y = H - 60;
   while (y > -60) { y -= gap(); addPlat(y); }
@@ -170,7 +177,7 @@ function start() {
 
 function gameOver() {
   state = 'over';
-  const s = Math.floor(score / 10);
+  const s = pts();
   if (s > best) { best = s; try { localStorage.setItem('jump-best', best) } catch (e) {} }
   who.textContent = pet === 'cat' ? 'Polux' : 'Rose';
   how.textContent = P.dead ? 'a été attrapé par un monstre !' : pet === 'cat' ? 'est tombé…' : 'est tombée…';
@@ -193,7 +200,10 @@ function update(dt) {
   if (P.x < -20) P.x += W + 40; if (P.x > W + 20) P.x -= W + 40;
 
   const prevBottom = P.y + 24;
-  P.vy += GRAV * dt; P.y += P.vy * dt;
+  P.vy += GRAV * dt;
+  if (P.rocket > 0) { P.rocket -= dt; P.vy = -16; }
+  if (P.shield > 0) P.shield -= dt;
+  P.y += P.vy * dt;
   P.squash = Math.max(0, P.squash - .08 * dt);
 
   for (const p of plats) {
@@ -206,11 +216,20 @@ function update(dt) {
       P.vy = springHit ? SPRING : JUMP; P.y = p.y - 24; P.squash = 1;
       if (springHit) buzz(20);
     }
+    if (p.item && !P.dead && Math.hypot(P.x - (p.x + p.w / 2), P.y - (p.y - 16)) < 30) {
+      const pop = { x: p.x + p.w / 2, y: p.y - 30, t: 50 };
+      if (p.item === 'rocket') { P.rocket = 150; pop.text = 'Fusée !'; }
+      else if (p.item === 'shield') { P.shield = 600; pop.text = 'Bouclier !'; }
+      else { bonus += 100; pop.text = '+100'; }
+      pops.push(pop); p.item = null; buzz(25);
+    }
   }
   for (const m of mons) {
     m.x += m.vx * dt; if (m.x < 20 || m.x > W - 20) m.vx *= -1;
     if (!P.dead && Math.hypot(P.x - m.x, P.y - m.y) < 32) {
       if (P.vy > 0 && P.y < m.y - 4) { m.hit = true; P.vy = JUMP; P.squash = 1; buzz(30) } // stomp
+      else if (P.rocket > 0) { m.hit = true; buzz(30) }
+      else if (P.shield > 0) { m.hit = true; P.shield = 0; buzz(80) }
       else { P.dead = true; P.vy = Math.max(P.vy, 0); buzz(200) }
     }
   }
@@ -221,7 +240,10 @@ function update(dt) {
     const d = line - P.y; P.y = line; score += d;
     for (const p of plats) p.y += d;
     for (const m of mons) m.y += d;
+    for (const o of pops) o.y += d;
   }
+  for (const o of pops) { o.t -= dt; o.y -= .5 * dt; }
+  pops = pops.filter(o => o.t > 0);
   plats = plats.filter(p => !p.gone && p.y < H + 40);
   mons = mons.filter(m => !m.hit && m.y < H + 40);
   let top = Math.min(H, ...plats.filter(p => p.type !== 'break').map(p => p.y));
@@ -250,11 +272,28 @@ function draw() {
     g.setLineDash([]);
     if (p.type === 'break') { g.beginPath(); g.moveTo(p.x + 30, p.y); g.lineTo(p.x + 36, p.y + 7); g.lineTo(p.x + 32, p.y + 14); g.stroke(); }
     if (p.spring) { const sx = p.x + p.w / 2; g.fillStyle = '#ccc'; g.fillRect(sx - 7, p.y - 10, 14, 10); g.strokeRect(sx - 7, p.y - 10, 14, 10); }
+    if (p.item) {
+      g.font = '24px system-ui'; g.textAlign = 'center';
+      g.fillText(ITEM[p.item] || (pet === 'cat' ? '🐟' : '🦴'), p.x + p.w / 2, p.y - 6 + Math.sin(performance.now() / 200) * 2);
+    }
   }
   for (const m of mons) drawMonster(m);
   g.save(); g.translate(P.x, P.y); if (P.dead) g.rotate(Math.PI);
-  drawPet(g, pet, 0, 0, P.face, P.squash); g.restore();
-  g.fillStyle = '#333'; g.font = 'bold 26px system-ui'; g.textAlign = 'left'; g.fillText(Math.floor(score / 10), 14, 38);
+  if (P.rocket > 0) { // flame
+    const f = 18 + Math.random() * 12;
+    g.fillStyle = '#ff9f1a'; g.beginPath(); g.moveTo(-10, 22); g.lineTo(10, 22); g.lineTo(0, 22 + f); g.fill();
+    g.fillStyle = '#ffe14d'; g.beginPath(); g.moveTo(-5, 22); g.lineTo(5, 22); g.lineTo(0, 22 + f * .6); g.fill();
+  }
+  drawPet(g, pet, 0, 0, P.face, P.squash);
+  if (P.shield > 0 && (P.shield > 120 || Math.floor(P.shield / 8) % 2)) {
+    g.fillStyle = 'rgba(90,169,230,.25)'; g.strokeStyle = '#5aa9e6'; g.lineWidth = 3;
+    g.beginPath(); g.arc(0, 0, 34, 0, 7); g.fill(); g.stroke();
+  }
+  g.restore();
+  g.textAlign = 'center'; g.font = 'bold 22px system-ui'; g.fillStyle = '#e67e22';
+  for (const o of pops) { g.globalAlpha = Math.min(1, o.t / 20); g.fillText(o.text, o.x, o.y); }
+  g.globalAlpha = 1;
+  g.fillStyle = '#333'; g.font = 'bold 26px system-ui'; g.textAlign = 'left'; g.fillText(pts(), 14, 38);
   g.font = 'bold 18px system-ui'; g.textAlign = 'right'; g.fillText('Niv. ' + (level() + 1), W - 14, 36);
   if (banner && banner.t > 0) {
     g.globalAlpha = Math.min(1, banner.t / 30); g.textAlign = 'center';
